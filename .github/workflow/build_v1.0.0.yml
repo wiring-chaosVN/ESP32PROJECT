@@ -1,1 +1,180 @@
+# ESP32-OS Bootloader CI workflow — build_v1.0.0
+# Version policy for future copies of this workflow:
+#   Small bug fix                  -> v1.0.1
+#   Larger fix / compatible change -> v1.1.0
+#   Major / incompatible update    -> v2.0.0
+# When bumping the version, update BUILD_VERSION and rename this file; remove the old
+# workflow file so GitHub Actions does not run two versions for the same push.
+# BUILD_VERSION labels this CI artifact only; it does not rewrite BLDR_VERSION in C source.
 
+name: ESP32-OS Bootloader build_v1.0.0
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: esp32-os-bootloader-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILD_VERSION: "1.0.0"
+  ESP_TARGET: esp32s3
+  ESP_IDF_VERSION: v4.4.7
+  CACHE_PREFIX: linux-esp32s3-idf-v4.4.7
+
+jobs:
+  build:
+    name: Build ESP32-S3 (ESP-IDF v4.4.7)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Detect ESP-IDF project directory
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f CMakeLists.txt && -f bootloader_components/bldr_hooks/hooks.c ]]; then
+            echo "path=." >> "$GITHUB_OUTPUT"
+          elif [[ -f esp32-os-bootloader/CMakeLists.txt && -f esp32-os-bootloader/bootloader_components/bldr_hooks/hooks.c ]]; then
+            echo "path=esp32-os-bootloader" >> "$GITHUB_OUTPUT"
+          else
+            echo "Could not locate the ESP32-OS bootloader project (expected CMakeLists.txt and bootloader_components/bldr_hooks/hooks.c)." >&2
+            exit 1
+          fi
+
+      - name: Prepare cache and artifact directories
+        shell: bash
+        run: |
+          mkdir -p .ccache "${{ steps.project.outputs.path }}/artifacts"
+
+      # CCache is separate from the build directory. It can reuse compiler outputs
+      # even if CMake/Ninja has to reconfigure or a previous compile stopped at an error.
+      - name: Restore compiler cache
+        id: ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ${{ env.CACHE_PREFIX }}-ccache-${{ hashFiles('**/*.c', '**/*.h', '**/*.cpp', '**/*.hpp', '**/*.cc', '**/*.cxx', '**/*.S', '**/*.s', '!**/build/**', '!.ccache/**', '!**/artifacts/**') }}
+          restore-keys: |
+            ${{ env.CACHE_PREFIX }}-ccache-
+
+      # Preserve CMake/Ninja state, generated sdkconfig, and already-built object files.
+      # A source-only change can restore the prior build under the same configuration.
+      # A change to sdkconfig.defaults, CMake, partition CSV, or component manifests gets
+      # a separate config namespace to avoid reusing a build configured differently.
+      - name: Restore incremental build directory
+        id: build-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ steps.project.outputs.path }}/build
+            ${{ steps.project.outputs.path }}/sdkconfig
+          key: ${{ env.CACHE_PREFIX }}-build-${{ hashFiles('sdkconfig', 'sdkconfig.defaults', '**/sdkconfig', '**/sdkconfig.defaults', 'CMakeLists.txt', '**/CMakeLists.txt', '**/*.csv', 'dependencies.lock', '**/dependencies.lock', '**/idf_component.yml') }}-${{ hashFiles('**/*.c', '**/*.h', '**/*.cpp', '**/*.hpp', '**/*.cc', '**/*.cxx', '**/*.S', '**/*.s', '!**/build/**', '!.ccache/**', '!**/artifacts/**') }}
+          restore-keys: |
+            ${{ env.CACHE_PREFIX }}-build-${{ hashFiles('sdkconfig', 'sdkconfig.defaults', '**/sdkconfig', '**/sdkconfig.defaults', 'CMakeLists.txt', '**/CMakeLists.txt', '**/*.csv', 'dependencies.lock', '**/dependencies.lock', '**/idf_component.yml') }}-
+
+      - name: Configure, build, and collect firmware
+        id: build-firmware
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v4.4.7
+          target: esp32s3
+          path: ${{ steps.project.outputs.path }}
+          # The hosted runner mounts this directory into the IDF container. Only cache
+          # data is mounted here; no ESP-IDF installation is written to the laptop.
+          extra_docker_args: >-
+            -v ${{ github.workspace }}/.ccache:/root/.ccache
+            -e CCACHE_DIR=/root/.ccache
+            -e IDF_CCACHE_ENABLE=1
+            -e CCACHE_COMPILERCHECK=content
+            -e CCACHE_COMPRESS=1
+            -e CCACHE_MAXSIZE=1G
+          command: |
+            set -euo pipefail
+            mkdir -p artifacts
+
+            # set-target clears build/. Only invoke it if sdkconfig is missing or
+            # targets a different chip; running it on every push would destroy incremental state.
+            if [ ! -f sdkconfig ] || ! grep -Fxq 'CONFIG_IDF_TARGET="esp32s3"' sdkconfig; then
+              idf.py set-target esp32s3
+            fi
+
+            # Explicitly enable ccache. If compilation fails, already cached objects
+            # and this build tree are still saved by the cache actions after the job.
+            idf.py --ccache build
+            ccache -s || true
+
+            test -s build/bootloader/bootloader.bin
+            test -s build/partition_table/partition-table.bin
+            test -s build/esp32_os_bootloader.bin
+            test -s build/esp32_os_bootloader.elf
+            test -s build/flash_args
+            test -s build/flasher_args.json
+
+            cd build
+            esptool.py --chip esp32s3 merge_bin -o ../artifacts/esp32-os-esp32s3-merged.bin @flash_args
+            cp bootloader/bootloader.bin ../artifacts/bootloader.bin
+            cp partition_table/partition-table.bin ../artifacts/partition-table.bin
+            cp esp32_os_bootloader.bin ../artifacts/esp32_os_bootloader.bin
+            cp esp32_os_bootloader.elf ../artifacts/esp32_os_bootloader.elf
+            cp flash_args ../artifacts/flash_args.txt
+            cp flasher_args.json ../artifacts/flasher_args.json
+
+      # Keep successful build outputs and hash them so a downloaded artifact can be checked.
+      - name: Write build metadata and checksums
+        if: success()
+        shell: bash
+        working-directory: ${{ steps.project.outputs.path }}
+        run: |
+          set -euo pipefail
+          cat > artifacts/BUILD_INFO.txt <<EOF
+          ESP32-OS Bootloader CI artifact version: v${BUILD_VERSION}
+          Target: ESP32-S3
+          ESP-IDF: ${ESP_IDF_VERSION}
+          Commit: ${GITHUB_SHA}
+          Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          Note: temporary single-app partition configuration; not a final ESP32-OS flash layout.
+          Note: artifact creation does not flash the board.
+          EOF
+          find artifacts -maxdepth 1 -type f ! -name SHA256SUMS.txt -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > artifacts/SHA256SUMS.txt
+
+      - name: Upload firmware artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32-os-bootloader-v${{ env.BUILD_VERSION }}-esp32s3-${{ github.sha }}
+          path: ${{ steps.project.outputs.path }}/artifacts/
+          if-no-files-found: error
+          retention-days: 30
+
+      # Build logs are also useful when a compile/link step fails. The cache steps still
+      # save partially populated build/ and .ccache/ after failures when GitHub allows it.
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32-os-build-logs-v${{ env.BUILD_VERSION }}-${{ github.run_id }}
+          path: |
+            ${{ steps.project.outputs.path }}/build/log/
+            ${{ steps.project.outputs.path }}/build/CMakeCache.txt
+            ${{ steps.project.outputs.path }}/build/config/sdkconfig.h
+          if-no-files-found: warn
+          retention-days: 14
