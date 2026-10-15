@@ -10,12 +10,6 @@
 name: ESP32-OS Bootloader build_v1.1.1
 
 on:
-  push:
-    branches:
-      - "**"
-    tags:
-      - "v*"
-  pull_request:
   workflow_dispatch:
 
 permissions:
