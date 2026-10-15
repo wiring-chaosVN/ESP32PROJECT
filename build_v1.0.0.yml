@@ -7,7 +7,7 @@
 # workflow file so GitHub Actions does not run two versions for the same push.
 # BUILD_VERSION labels this CI artifact only; it does not rewrite BLDR_VERSION in C source.
 
-name: ESP32-OS Bootloader build_v1.0.0
+name: Bootloader build_v1.0.0
 
 on:
   push:
