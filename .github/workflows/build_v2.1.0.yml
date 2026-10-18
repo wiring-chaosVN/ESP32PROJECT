@@ -144,17 +144,18 @@ jobs:
             -e CCACHE_COMPILERCHECK=content
             -e CCACHE_COMPRESS=1
             -e CCACHE_MAXSIZE=1G
+          # Do NOT use single quotes anywhere in this command: the action wraps it in bash -c with single quotes.
           command: |
             set -euo pipefail
             mkdir -p artifacts
 
             # set-target clears build/. Only invoke it if sdkconfig is missing or
             # targets a different chip; running it on every push would destroy incremental state.
-            if [ ! -f sdkconfig ] || ! grep -Fxq 'CONFIG_IDF_TARGET="esp32s3"' sdkconfig; then
+            if [ ! -f sdkconfig ] || ! grep -Fxq "CONFIG_IDF_TARGET=\"esp32s3\"" sdkconfig; then
               idf.py set-target esp32s3
             fi
 
-            # bldr_hooks (~13 KiB of code) overflows the 12 KiB iram_seg that ESP-IDF's
+            # bldr_hooks (~13 KiB of code) overflows the 12 KiB iram_seg that the ESP-IDF
             # bootloader.ld gives unlisted components. Move it to iram_loader_seg.
             IDFDIR="${IDF_PATH:-/opt/esp/idf}"
             LD=$(find "$IDFDIR/components/bootloader" -path "*esp32s3*" -name "bootloader.ld*" | head -n 1)
@@ -177,7 +178,7 @@ jobs:
             test -s build/esp32_os_bootloader.elf
             test -s build/flash_args
             test -s build/flasher_args.json
-            BOOTLOADER_SIZE=$(stat -c '%s' build/bootloader/bootloader.bin)
+            BOOTLOADER_SIZE=$(stat -c "%s" build/bootloader/bootloader.bin)
             if [ "$BOOTLOADER_SIZE" -ge $((0x20000)) ]; then
               echo "Bootloader (${BOOTLOADER_SIZE} bytes) overlaps the ESP-IDF partition table at 0x20000." >&2
               exit 1
@@ -203,7 +204,7 @@ jobs:
             cp ../board.dts ../artifacts/board.dts
             cp ../board.dtb ../artifacts/board.dtb
             cp flasher_args.json ../artifacts/flasher_args.json
-            python3 - <<'PY'
+            python3 - <<"PY"
             from pathlib import Path
             lines = Path("flash_args").read_text().splitlines()
             out = []
