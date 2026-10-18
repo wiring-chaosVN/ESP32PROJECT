@@ -156,11 +156,14 @@ jobs:
 
             # bldr_hooks (~13 KiB of code) overflows the 12 KiB iram_seg that ESP-IDF's
             # bootloader.ld gives unlisted components. Move it to iram_loader_seg.
-            LD="${IDF_PATH:-/opt/esp/idf}/components/bootloader/subproject/main/ld/esp32s3/bootloader.ld"
+            IDFDIR="${IDF_PATH:-/opt/esp/idf}"
+            LD=$(find "$IDFDIR/components/bootloader" -path "*esp32s3*" -name "bootloader.ld*" | head -n 1)
+            echo "bootloader linker script: ${LD:-NOT FOUND}"
+            if [ -z "$LD" ]; then find "$IDFDIR/components/bootloader" -name "*.ld*" >&2; exit 1; fi
             if ! grep -q libbldr_hooks "$LD"; then
-              sed -i "/libspi_flash\.a:/a\\    *libbldr_hooks.a:*.*(.literal .text .literal.* .text.*)" "$LD"
+              sed -i "/libspi_flash\\.a:/a\\    *libbldr_hooks.a:*.*(.literal .text .literal.* .text.*)" "$LD"
             fi
-            grep -q libbldr_hooks "$LD"
+            grep -q libbldr_hooks "$LD" || { echo "anchor libspi_flash.a not found in $LD" >&2; exit 1; }
 
             # Explicitly enable ccache. If compilation fails, already cached objects
             # and this build tree are still saved by the cache actions after the job.
