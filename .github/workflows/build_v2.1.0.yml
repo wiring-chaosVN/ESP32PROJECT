@@ -1,0 +1,277 @@
+# ESP32-OS Bootloader CI workflow — build_v2.1.0
+# Version policy for future copies of this workflow:
+#   Small bug fix                  -> v1.0.1
+#   Larger fix / compatible change -> v1.1.3
+#   Major / incompatible update    -> v2.1.0
+# When bumping the version, update BUILD_VERSION and rename this file; remove the old
+# workflow file if you do not want multiple manual entries in the Actions tab.
+# BUILD_VERSION labels this CI artifact only; it does not rewrite BLDR_VERSION in C source.
+
+name: ESP32-OS Bootloader build_v2.1.0
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: esp32-os-bootloader-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILD_VERSION: "2.1.0"
+  ESP_TARGET: esp32s3
+  ESP_IDF_VERSION: v4.4.7
+  CACHE_PREFIX: linux-esp32s3-idf-v4.4.7
+
+jobs:
+  build:
+    name: Build ESP32-S3 (ESP-IDF v4.4.7)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Replace source tree from uploaded ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="esp32-os-bootloader-source.zip"
+          if [[ ! -s "$ARCHIVE" ]]; then
+            echo "Missing $ARCHIVE. Upload the source ZIP to the repository root." >&2
+            exit 1
+          fi
+          # Replace the complete extracted source tree so deleted files do not linger.
+          rm -rf esp32-os-bootloader
+          unzip -oq "$ARCHIVE" -d .
+          test -f esp32-os-bootloader/CMakeLists.txt
+          test -f esp32-os-bootloader/bootloader_components/bldr_hooks/hooks.c
+
+      - name: Detect ESP-IDF project directory
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f CMakeLists.txt && -f bootloader_components/bldr_hooks/hooks.c ]]; then
+            echo "path=." >> "$GITHUB_OUTPUT"
+          elif [[ -f esp32-os-bootloader/CMakeLists.txt && -f esp32-os-bootloader/bootloader_components/bldr_hooks/hooks.c ]]; then
+            echo "path=esp32-os-bootloader" >> "$GITHUB_OUTPUT"
+          else
+            echo "Could not locate the ESP32-OS bootloader project (expected CMakeLists.txt and bootloader_components/bldr_hooks/hooks.c)." >&2
+            exit 1
+          fi
+
+      - name: Install device-tree-compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq device-tree-compiler
+
+      - name: Generate custom ESP-OS partition table
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "${{ steps.project.outputs.path }}/tools/generate_nexus_ptb.py"
+          python3 "${{ steps.project.outputs.path }}/tools/make_os_blob.py" \
+            --magic ROMF \
+            --input "${{ steps.project.outputs.path }}/romfile.defaults.example" \
+            --output "${{ steps.project.outputs.path }}/romfile.bin" \
+            --max-size 0x1000
+          python3 "${{ steps.project.outputs.path }}/tools/build_dtb.py"
+          test -s "${{ steps.project.outputs.path }}/nexus.ptb"
+          test -s "${{ steps.project.outputs.path }}/board.dtb"
+          test -s "${{ steps.project.outputs.path }}/romfile.bin"
+
+      - name: Static monitor feature checks
+        shell: bash
+        run: python3 "${{ steps.project.outputs.path }}/tests/check_monitor_features.py"
+
+      - name: Static DTS checks
+        shell: bash
+        run: python3 "${{ steps.project.outputs.path }}/tests/check_dt.py"
+
+      - name: Prepare cache and artifact directories
+        shell: bash
+        run: |
+          mkdir -p .ccache "${{ steps.project.outputs.path }}/artifacts"
+
+      # CCache is separate from the build directory. It can reuse compiler outputs
+      # even if CMake/Ninja has to reconfigure or a previous compile stopped at an error.
+      - name: Restore compiler cache
+        id: ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ${{ env.CACHE_PREFIX }}-ccache-${{ hashFiles('**/*.c', '**/*.h', '**/*.cpp', '**/*.hpp', '**/*.cc', '**/*.cxx', '**/*.S', '**/*.s', '!**/build/**', '!.ccache/**', '!**/artifacts/**') }}
+          restore-keys: |
+            ${{ env.CACHE_PREFIX }}-ccache-
+
+      # Preserve CMake/Ninja state, generated sdkconfig, and already-built object files.
+      # A source-only change can restore the prior build under the same configuration.
+      # A change to sdkconfig.defaults, CMake, partition CSV, or component manifests gets
+      # a separate config namespace to avoid reusing a build configured differently.
+      - name: Restore incremental build directory
+        id: build-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ steps.project.outputs.path }}/build
+            ${{ steps.project.outputs.path }}/sdkconfig
+          key: ${{ env.CACHE_PREFIX }}-build-${{ hashFiles('sdkconfig', 'sdkconfig.defaults', '**/sdkconfig', '**/sdkconfig.defaults', 'CMakeLists.txt', '**/CMakeLists.txt', '**/*.csv', 'dependencies.lock', '**/dependencies.lock', '**/idf_component.yml') }}-${{ hashFiles('**/*.c', '**/*.h', '**/*.cpp', '**/*.hpp', '**/*.cc', '**/*.cxx', '**/*.S', '**/*.s', '!**/build/**', '!.ccache/**', '!**/artifacts/**') }}
+          restore-keys: |
+            ${{ env.CACHE_PREFIX }}-build-${{ hashFiles('sdkconfig', 'sdkconfig.defaults', '**/sdkconfig', '**/sdkconfig.defaults', 'CMakeLists.txt', '**/CMakeLists.txt', '**/*.csv', 'dependencies.lock', '**/dependencies.lock', '**/idf_component.yml') }}-
+
+      - name: Configure, build, and collect firmware
+        id: build-firmware
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v4.4.7
+          target: esp32s3
+          path: ${{ steps.project.outputs.path }}
+          # The hosted runner mounts this directory into the IDF container. Only cache
+          # data is mounted here; no ESP-IDF installation is written to the laptop.
+          extra_docker_args: >-
+            -v ${{ github.workspace }}/.ccache:/root/.ccache
+            -e CCACHE_DIR=/root/.ccache
+            -e IDF_CCACHE_ENABLE=1
+            -e CCACHE_COMPILERCHECK=content
+            -e CCACHE_COMPRESS=1
+            -e CCACHE_MAXSIZE=1G
+          command: |
+            set -euo pipefail
+            mkdir -p artifacts
+
+            # set-target clears build/. Only invoke it if sdkconfig is missing or
+            # targets a different chip; running it on every push would destroy incremental state.
+            if [ ! -f sdkconfig ] || ! grep -Fxq 'CONFIG_IDF_TARGET="esp32s3"' sdkconfig; then
+              idf.py set-target esp32s3
+            fi
+
+            # bldr_hooks (~13 KiB of code) overflows the 12 KiB iram_seg that ESP-IDF's
+            # bootloader.ld gives unlisted components. Move it to iram_loader_seg.
+            LD="${IDF_PATH:-/opt/esp/idf}/components/bootloader/subproject/main/ld/esp32s3/bootloader.ld"
+            if ! grep -q libbldr_hooks "$LD"; then
+              sed -i "/libspi_flash\.a:/a\\    *libbldr_hooks.a:*.*(.literal .text .literal.* .text.*)" "$LD"
+            fi
+            grep -q libbldr_hooks "$LD"
+
+            # Explicitly enable ccache. If compilation fails, already cached objects
+            # and this build tree are still saved by the cache actions after the job.
+            idf.py --ccache build
+            ccache -s || true
+
+            test -s build/bootloader/bootloader.bin
+            test -s build/bootloader/bootloader.elf
+            test -s build/partition_table/partition-table.bin
+            test -s build/esp32_os_bootloader.bin
+            test -s build/esp32_os_bootloader.elf
+            test -s build/flash_args
+            test -s build/flasher_args.json
+            BOOTLOADER_SIZE=$(stat -c '%s' build/bootloader/bootloader.bin)
+            if [ "$BOOTLOADER_SIZE" -ge $((0x20000)) ]; then
+              echo "Bootloader (${BOOTLOADER_SIZE} bytes) overlaps the ESP-IDF partition table at 0x20000." >&2
+              exit 1
+            fi
+
+            # Preserve the actual bootloader ELF/map and memory summaries so linker
+            # budgets and PSRAM-source integration can be reviewed from the artifact.
+            cp build/bootloader/bootloader.elf artifacts/bootloader.elf
+            if [ -s build/bootloader/bootloader.map ]; then cp build/bootloader/bootloader.map artifacts/bootloader.map; fi
+            idf.py size > artifacts/application-size-summary.txt
+            idf.py size-components > artifacts/application-size-components.txt
+
+            cd build
+            esptool.py --chip esp32s3 merge_bin -o ../artifacts/esp32-os-esp32s3-merged.bin @flash_args 0x21000 ../nexus.ptb 0x22000 ../board.dtb 0xFFF000 ../romfile.bin
+            cp bootloader/bootloader.bin ../artifacts/bootloader.bin
+            cp partition_table/partition-table.bin ../artifacts/partition-table.bin
+            cp esp32_os_bootloader.bin ../artifacts/esp32_os_bootloader.bin
+            cp esp32_os_bootloader.elf ../artifacts/esp32_os_bootloader.elf
+            cp ../nexus.ptb ../artifacts/nexus.ptb
+            cp ../partitions.csv ../artifacts/partitions.csv
+            cp ../nexus.ptb.csv ../artifacts/nexus.ptb.csv
+            cp ../romfile.bin ../artifacts/romfile.bin
+            cp ../board.dts ../artifacts/board.dts
+            cp ../board.dtb ../artifacts/board.dtb
+            cp flasher_args.json ../artifacts/flasher_args.json
+            python3 - <<'PY'
+            from pathlib import Path
+            lines = Path("flash_args").read_text().splitlines()
+            out = []
+            for line in lines:
+                parts = line.split()
+                if len(parts) >= 2 and parts[0].lower().startswith("0x"):
+                    offset, source = parts[0], parts[1]
+                    out.append(f"{offset} {Path(source).name}")
+                    if offset.lower() == "0x20000":
+                        out.append("0x21000 nexus.ptb")
+                        out.append("0x22000 board.dtb")
+                elif line.strip():
+                    out.append(line.strip())
+            if not any(row.lower() == "0x21000 nexus.ptb" for row in out):
+                raise SystemExit("normalized flash_args missing nexus.ptb anchor payload")
+            if not any(row.lower() == "0x22000 board.dtb" for row in out):
+                raise SystemExit("normalized flash_args missing board.dtb payload")
+            if not any(row.lower() == "0xfff000 romfile.bin" for row in out):
+                out.append("0xFFF000 romfile.bin")
+            Path("../artifacts/flash_args.txt").write_text("\n".join(out) + "\n")
+            PY
+
+      # Keep successful build outputs and hash them so a downloaded artifact can be checked.
+      - name: Write build metadata and checksums
+        if: success()
+        shell: bash
+        working-directory: ${{ steps.project.outputs.path }}
+        run: |
+          set -euo pipefail
+          cat > artifacts/BUILD_INFO.txt <<EOF
+          ESP32-OS Bootloader CI artifact version: v${BUILD_VERSION}
+          Target: ESP32-S3
+          ESP-IDF: ${ESP_IDF_VERSION}
+          Commit: ${GITHUB_SHA}
+          Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          Partition scheme: ESP-IDF anchor table + separate CRC-protected binary nexus.ptb (MTD table)
+          Flash map: bootloader 0x0 128K, IDF table 0x20000, nexus.ptb 0x21000, dtb 0x22000 56K, recovery 0x30000 1M, kernel 0x130000 6M, rootfs 0x730000 6M, rootfs_data 0xD30000, romfile 0xFFF000
+          Kernel: native ESP-IDF segmented image in the nexus MTD kernel at 0x130000 (6 MiB, XIP-capable); not listed in the ESP-IDF table
+          Device tree: board.dts compiled to board.dtb and flashed to the nexus MTD dtb at 0x22000; the bootloader reads only the display node, the rest is for the kernel
+          Boot-info: NBIF v2 is written to PSRAM physical offset 0 on every kernel hand-off (go, automatic boot, jump)
+          Display: the boot logo is drawn only when board.dts lists an enabled supported display; the bootloader runs without one
+          PSRAM: ESP-IDF v4.4.7 octal PSRAM driver initialized by the bootloader hook at 40 MHz; size is detected and dynamically mapped
+          Internal SRAM/IRAM: private bootloader buffers, not legal monitor target addresses
+          Ramdisk: optional MTD named ramdisk (not in the default map); if present it is checked by the bootloader and left on flash
+          ROMF: default key/value payload packaged with header and CRC32; calibration remains uncalibrated
+          Note: CI does not create finished kernel/rootfs/ramdisk OS payloads.
+          Note: the recovery app is not the ESP-OS kernel; artifact creation does not flash hardware.
+          EOF
+          find artifacts -maxdepth 1 -type f ! -name SHA256SUMS.txt -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > artifacts/SHA256SUMS.txt
+
+      - name: Upload firmware artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32-os-bootloader-v${{ env.BUILD_VERSION }}-esp32s3-${{ github.sha }}
+          path: ${{ steps.project.outputs.path }}/artifacts/
+          if-no-files-found: error
+          retention-days: 30
+
+      # Build logs are also useful when a compile/link step fails. The cache steps still
+      # save partially populated build/ and .ccache/ after failures when GitHub allows it.
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32-os-build-logs-v${{ env.BUILD_VERSION }}-${{ github.run_id }}
+          path: |
+            ${{ steps.project.outputs.path }}/build/log/
+            ${{ steps.project.outputs.path }}/build/CMakeCache.txt
+            ${{ steps.project.outputs.path }}/build/config/sdkconfig.h
+          if-no-files-found: warn
+          retention-days: 14
