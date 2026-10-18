@@ -50,6 +50,7 @@ jobs:
           # Replace the complete extracted source tree so deleted files do not linger.
           rm -rf esp32-os-bootloader
           unzip -oq "$ARCHIVE" -d .
+          find esp32-os-bootloader -exec touch {} +
           test -f esp32-os-bootloader/CMakeLists.txt
           test -f esp32-os-bootloader/bootloader_components/bldr_hooks/hooks.c
 
