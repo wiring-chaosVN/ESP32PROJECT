@@ -227,6 +227,11 @@ jobs:
             Path("../artifacts/flash_args.txt").write_text("\n".join(out) + "\n")
             PY
 
+            # The container runs as root; make outputs readable by the runner user
+            # (checksums, upload-artifact and the cache steps run outside the container).
+            cd ..
+            chmod -R a+rX artifacts build sdkconfig 2>/dev/null || true
+
       # Keep successful build outputs and hash them so a downloaded artifact can be checked.
       - name: Write build metadata and checksums
         if: success()
