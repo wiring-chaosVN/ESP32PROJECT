@@ -15,6 +15,7 @@ JOBS="${JOBS:-$(nproc)}"
 KERNEL_PARTITION_MAX=$((0x600000))
 ROOTFS_PARTITION_MAX=$((0x600000))
 NUTTX_LINKER_PATCH="$ROOT_DIR/ci/patches/nuttx/0001-esp32s3-place-world1-vectors-in-iram.patch"
+NUTTX_RTC_WDT_PATCH="$ROOT_DIR/ci/patches/nuttx/0002-esp32s3-fix-early-rtc-wdt-deinit.patch"
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -106,6 +107,19 @@ grep -Fq '.world1.vectors : ALIGN(1024)' "$LEGACY_LINKER_SCRIPT" || {
 }
 grep -Fq 'KEEP (*(.world1_vectors.text));' "$LEGACY_LINKER_SCRIPT" || {
   echo 'ERROR: World1 vector input section is not retained by linker script' >&2
+  exit 1
+}
+
+printf '%s\n' '== Fix early ESP32-S3 RTC WDT deinitialization =='
+RTC_WDT_SOURCE="$NUTTX_DIR/arch/xtensa/src/esp32s3/esp32s3_wdt.c"
+[[ -f "$RTC_WDT_SOURCE" ]] || {
+  echo "ERROR: expected ESP32-S3 WDT source not found: $RTC_WDT_SOURCE" >&2
+  exit 1
+}
+git -C "$NUTTX_DIR" apply --check "$NUTTX_RTC_WDT_PATCH"
+git -C "$NUTTX_DIR" apply "$NUTTX_RTC_WDT_PATCH"
+grep -Fq 'putreg32(TIMG_WDT_WKEY_VALUE, RTC_CNTL_WDTWPROTECT_REG);' "$RTC_WDT_SOURCE" || {
+  echo 'ERROR: RTC WDT write-protection unlock was not applied' >&2
   exit 1
 }
 

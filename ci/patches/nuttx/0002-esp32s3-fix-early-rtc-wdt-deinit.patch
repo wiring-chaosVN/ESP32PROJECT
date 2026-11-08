@@ -1,0 +1,17 @@
+diff --git a/arch/xtensa/src/esp32s3/esp32s3_wdt.c b/arch/xtensa/src/esp32s3/esp32s3_wdt.c
+--- a/arch/xtensa/src/esp32s3/esp32s3_wdt.c
++++ b/arch/xtensa/src/esp32s3/esp32s3_wdt.c
+@@ -1076,8 +1076,13 @@
+ void esp32s3_wdt_early_deinit(void)
+ {
+   uint32_t regval;
++
++  /* Unlock write protection before changing the RTC watchdog config. */
++  putreg32(TIMG_WDT_WKEY_VALUE, RTC_CNTL_WDTWPROTECT_REG);
++
+   regval  = getreg32(RTC_CNTL_WDTCONFIG0_REG);
+   regval &= ~RTC_CNTL_WDT_EN;
+   putreg32(regval, RTC_CNTL_WDTCONFIG0_REG);
++  /* Lock the RTC watchdog registers again. */
+   putreg32(0, RTC_CNTL_WDTWPROTECT_REG);
+ }
