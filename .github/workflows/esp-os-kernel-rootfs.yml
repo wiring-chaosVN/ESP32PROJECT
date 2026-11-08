@@ -24,7 +24,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             autoconf automake bison build-essential curl flex gawk gettext git \
-            gperf libncurses-dev libtool libtool-bin libssl-dev make pkg-config python3 python3-pip \
+            gperf libncurses-dev libtool libtool-bin libssl-dev make pkg-config python3 python3-pip python3-venv \
             genromfs vim-common xz-utils
 
       - name: Install NuttX Kconfig frontends
@@ -66,9 +66,17 @@ jobs:
           "$tool/bin/xtensa-esp32s3-elf-gcc" --version
 
       - name: Install pinned ESP image tooling
+        shell: bash
         run: |
-          python3 -m pip install --user 'esptool==4.8.1'
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          set -euo pipefail
+          venv="$RUNNER_TEMP/esptool-venv"
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --upgrade pip 'setuptools>=64' wheel
+          "$venv/bin/python" -m pip install --no-build-isolation 'esptool==4.8.1'
+          "$venv/bin/python" -m pip check
+          "$venv/bin/python" -c 'import esptool; assert esptool.__version__ == "4.8.1", esptool.__version__; print("Installed esptool", esptool.__version__)'
+          test -x "$venv/bin/esptool.py"
+          echo "$venv/bin" >> "$GITHUB_PATH"
 
       - name: Build kernel, boot ROMFS and external rootfs
         env:
