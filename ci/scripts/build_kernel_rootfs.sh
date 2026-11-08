@@ -14,6 +14,7 @@ TOOLCHAIN_VERSION="${XTENSA_TOOLCHAIN:-xtensa-esp-elf-14.2.0_20241119}"
 JOBS="${JOBS:-$(nproc)}"
 KERNEL_PARTITION_MAX=$((0x600000))
 ROOTFS_PARTITION_MAX=$((0x600000))
+NUTTX_LINKER_PATCH="$ROOT_DIR/ci/patches/nuttx/0001-esp32s3-place-world1-vectors-in-iram.patch"
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -24,11 +25,30 @@ require_command() {
 
 clone_at_commit() {
   local url="$1" dest="$2" commit="$3"
-  mkdir -p "$dest"
-  git -C "$dest" init -q
-  git -C "$dest" remote add origin "$url"
-  git -C "$dest" fetch --depth=1 origin "$commit"
-  git -C "$dest" checkout --quiet --detach FETCH_HEAD
+  mkdir -p "$(dirname "$dest")"
+
+  # The CI cache stores only each repository's .git directory.  Reuse its
+  # pinned commit objects, but always recreate a clean, exact source tree.
+  if [[ ! -d "$dest/.git" ]]; then
+    rm -rf "$dest"
+    mkdir -p "$dest"
+    git -C "$dest" init -q
+  fi
+
+  if git -C "$dest" remote get-url origin >/dev/null 2>&1; then
+    git -C "$dest" remote set-url origin "$url"
+  else
+    git -C "$dest" remote add origin "$url"
+  fi
+
+  if ! git -C "$dest" cat-file -e "${commit}^{commit}" 2>/dev/null; then
+    git -C "$dest" fetch --depth=1 origin "$commit"
+  fi
+
+  git -C "$dest" checkout --quiet --force --detach "$commit"
+  git -C "$dest" reset --hard "$commit"
+  git -C "$dest" clean -ffdx
+
   local actual
   actual="$(git -C "$dest" rev-parse HEAD)"
   [[ "$actual" == "$commit" ]] || {
@@ -37,16 +57,57 @@ clone_at_commit() {
   }
 }
 
+report_kernel_link_failure() {
+  echo '== Kernel link diagnostics ==' >&2
+
+  if [[ -f "$NUTTX_DIR/nuttx" ]]; then
+    echo '-- Vector symbol addresses in partial nuttx ELF (if available) --' >&2
+    xtensa-esp32s3-elf-nm -n "$NUTTX_DIR/nuttx" 2>/dev/null \
+      | grep -E '(_world1_vectors|_xtensa_level[23]_vector|_debug_exception_vector|_xtensa_nmi_vector|_kernel_exception_vector|_user_exception_vector|_double_exception_vector)' \
+      || true
+  fi
+
+  local linker_script="$NUTTX_DIR/boards/xtensa/esp32s3/common/scripts/legacy_sections.ld.tmp"
+  if [[ -f "$linker_script" ]]; then
+    echo '-- Effective legacy linker script: World1 placement --' >&2
+    grep -n -B 5 -A 9 'world1\.vectors\|world1_vectors\.text' "$linker_script" >&2 || true
+  fi
+
+  echo '-- Linker-related output files --' >&2
+  find "$NUTTX_DIR" -maxdepth 3 -type f \
+    \( -name '*.map' -o -name 'nuttx' -o -name '*.ld.tmp' \) \
+    -printf '%p\n' 2>/dev/null | head -80 >&2 || true
+}
+
 for cmd in git make python3 genromfs xxd xtensa-esp32s3-elf-gcc xtensa-esp32s3-elf-nm esptool.py; do
   require_command "$cmd"
 done
 
-rm -rf "$WORK_DIR" "$OUT_DIR"
+# Keep the .git object stores under WORK_DIR so actions/cache can reuse them.
+# Only remove generated outputs; clone_at_commit resets each source tree itself.
+rm -rf "$OUT_DIR" "$ROOTFS_STAGE"
 mkdir -p "$WORK_DIR" "$OUT_DIR"
 
-printf '%s\n' '== Clone pinned Apache NuttX sources =='
+printf '%s\n' '== Clone/reuse pinned Apache NuttX sources =='
 clone_at_commit https://github.com/apache/nuttx.git "$NUTTX_DIR" "$NUTTX_COMMIT"
 clone_at_commit https://github.com/apache/nuttx-apps.git "$APPS_DIR" "$NUTTX_APPS_COMMIT"
+
+printf '%s\n' '== Patch legacy ESP32-S3 linker script for World1 vectors =='
+LEGACY_LINKER_SCRIPT="$NUTTX_DIR/boards/xtensa/esp32s3/common/scripts/legacy_sections.ld"
+[[ -f "$NUTTX_LINKER_SCRIPT" ]] || {
+  echo "ERROR: expected NuttX linker script not found: $LEGACY_LINKER_SCRIPT" >&2
+  exit 1
+}
+git -C "$NUTTX_DIR" apply --check "$NUTTX_LINKER_PATCH"
+git -C "$NUTTX_DIR" apply "$NUTTX_LINKER_PATCH"
+grep -Fq '.world1.vectors : ALIGN(1024)' "$LEGACY_LINKER_SCRIPT" || {
+  echo 'ERROR: World1 vector placement patch did not take effect' >&2
+  exit 1
+}
+grep -Fq 'KEEP (*(.world1_vectors.text));' "$LEGACY_LINKER_SCRIPT" || {
+  echo 'ERROR: World1 vector input section is not retained by linker script' >&2
+  exit 1
+}
 
 printf '%s\n' '== Configure ESP32-S3-WROOM-1-N16R8 KERNEL =='
 CONFIG_SRC="$ROOT_DIR/ci/config/esp32s3_n16r8_kernel/defconfig"
@@ -89,7 +150,10 @@ fi
 
 cp .config "$OUT_DIR/nuttx.config"
 printf '%s\n' '== Build NuttX kernel (pre-application link) =='
-make -j"$JOBS"
+if ! make -j"$JOBS"; then
+  report_kernel_link_failure
+  exit 1
+fi
 [[ -s nuttx ]] || { echo 'ERROR: NuttX ELF was not produced' >&2; exit 1; }
 
 printf '%s\n' '== Export kernel headers/libraries for KERNEL-mode applications =='

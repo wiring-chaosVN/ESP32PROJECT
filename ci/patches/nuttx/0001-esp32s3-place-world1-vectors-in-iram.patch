@@ -1,0 +1,23 @@
+diff --git a/boards/xtensa/esp32s3/common/scripts/legacy_sections.ld b/boards/xtensa/esp32s3/common/scripts/legacy_sections.ld
+--- a/boards/xtensa/esp32s3/common/scripts/legacy_sections.ld
++++ b/boards/xtensa/esp32s3/common/scripts/legacy_sections.ld
+@@ -185,7 +185,19 @@
+     . = ALIGN(4) + 16;
+
+     _iram_text = ABSOLUTE(.);
+   } >iram0_0_seg
++
++#ifdef CONFIG_BUILD_KERNEL
++  /* The World1 vector table must execute from Internal SRAM1.  Keep it
++   * adjacent to the privileged vector table so its direct Xtensa j
++   * instructions can reach the corresponding kernel vector handlers.
++   * The 1 KB alignment is required by the ESP32-S3 vector-base register.
++   */
++  .world1.vectors : ALIGN(1024)
++  {
++    KEEP (*(.world1_vectors.text));
++  } >iram0_0_seg
++#endif
+
+   .dram0.dummy (NOLOAD) :
+   {

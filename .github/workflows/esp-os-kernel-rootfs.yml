@@ -17,7 +17,25 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout ESP-OS sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Restore pinned toolchain and Kconfig caches
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/pip
+            ${{ runner.temp }}/xtensa-esp-elf
+            ${{ runner.temp }}/nuttx-tools
+            ${{ runner.temp }}/kconfig-frontends
+          key: esp-os-tools-${{ runner.os }}-xtensa-14.2.0_20241119-kconfig-9ad3e1ee75c7d39bfee8019ce44f4fd035d89584
+
+      - name: Restore pinned NuttX source caches
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ runner.temp }}/esp-os-n16r8-build/nuttx/.git
+            ${{ runner.temp }}/esp-os-n16r8-build/apps/.git
+          key: esp-os-sources-${{ runner.os }}-nuttx-3e04c33049ef28ffdcae351f5b08d10053a5df9a-apps-d14111ebeff7e8eb0512e63238883dece6842c05
 
       - name: Install host dependencies
         run: |
@@ -33,15 +51,24 @@ jobs:
           set -euo pipefail
           src="$RUNNER_TEMP/nuttx-tools"
           prefix="$RUNNER_TEMP/kconfig-frontends"
-          mkdir -p "$src" "$prefix"
-          curl -fsSL \
-            https://github.com/patacongo/tools/archive/9ad3e1ee75c7d39bfee8019ce44f4fd035d89584.tar.gz \
-            | tar -xz --strip-components=1 -C "$src"
-          cd "$src/kconfig-frontends"
-          ./configure --enable-mconf --disable-gconf --disable-qconf \
-            --enable-static --prefix="$prefix"
-          make -j"$(nproc)"
-          make install
+
+          if [[ -x "$prefix/bin/kconfig-conf" && -x "$prefix/bin/kconfig-mconf" ]]; then
+            echo "Using cached Kconfig frontends"
+          else
+            rm -rf "$src" "$prefix"
+            mkdir -p "$src" "$prefix"
+            curl -fsSL \
+              https://github.com/patacongo/tools/archive/9ad3e1ee75c7d39bfee8019ce44f4fd035d89584.tar.gz \
+              | tar -xz --strip-components=1 -C "$src"
+            cd "$src/kconfig-frontends"
+            ./configure --enable-mconf --disable-gconf --disable-qconf \
+              --enable-static --prefix="$prefix"
+            make -j"$(nproc)"
+            make install
+          fi
+
+          test -x "$prefix/bin/kconfig-conf"
+          test -x "$prefix/bin/kconfig-mconf"
           echo "$prefix/bin" >> "$GITHUB_PATH"
 
       - name: Install pinned Xtensa toolchain
@@ -49,10 +76,17 @@ jobs:
         run: |
           set -euo pipefail
           tool="$RUNNER_TEMP/xtensa-esp-elf"
-          mkdir -p "$tool"
-          curl -fsSL \
-            https://github.com/espressif/crosstool-NG/releases/download/esp-14.2.0_20241119/xtensa-esp-elf-14.2.0_20241119-x86_64-linux-gnu.tar.xz \
-            | tar -xJ --strip-components=1 -C "$tool"
+
+          if [[ ! -x "$tool/bin/xtensa-esp-elf-gcc" || ! -x "$tool/bin/xtensa-esp-elf-ld" ]]; then
+            rm -rf "$tool"
+            mkdir -p "$tool"
+            curl -fsSL \
+              https://github.com/espressif/crosstool-NG/releases/download/esp-14.2.0_20241119/xtensa-esp-elf-14.2.0_20241119-x86_64-linux-gnu.tar.xz \
+              | tar -xJ --strip-components=1 -C "$tool"
+          else
+            echo "Using cached Xtensa toolchain"
+          fi
+
           # NuttX's Xtensa CROSSDEV is xtensa-esp32s3-elf- while the
           # Espressif 14.2 toolchain distribution is named xtensa-esp-elf.
           # Preserve vendor-provided aliases if present; otherwise create
@@ -62,8 +96,10 @@ jobs:
               ln -s "xtensa-esp-elf-$toolname" "$tool/bin/xtensa-esp32s3-elf-$toolname"
             fi
           done
+
           echo "$tool/bin" >> "$GITHUB_PATH"
           "$tool/bin/xtensa-esp32s3-elf-gcc" --version
+          "$tool/bin/xtensa-esp32s3-elf-ld" --version
 
       - name: Install pinned ESP image tooling
         shell: bash
@@ -89,7 +125,7 @@ jobs:
         run: esptool.py image_info out/nuttx.bin
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: esp-os-n16r8-kernel-rootfs-${{ github.sha }}
           path: out/
