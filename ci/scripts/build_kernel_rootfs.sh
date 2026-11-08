@@ -94,7 +94,7 @@ clone_at_commit https://github.com/apache/nuttx-apps.git "$APPS_DIR" "$NUTTX_APP
 
 printf '%s\n' '== Patch legacy ESP32-S3 linker script for World1 vectors =='
 LEGACY_LINKER_SCRIPT="$NUTTX_DIR/boards/xtensa/esp32s3/common/scripts/legacy_sections.ld"
-[[ -f "$NUTTX_LINKER_SCRIPT" ]] || {
+[[ -f "$LEGACY_LINKER_SCRIPT" ]] || {
   echo "ERROR: expected NuttX linker script not found: $LEGACY_LINKER_SCRIPT" >&2
   exit 1
 }
