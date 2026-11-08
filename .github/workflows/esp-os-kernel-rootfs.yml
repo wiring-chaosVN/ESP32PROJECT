@@ -1,0 +1,94 @@
+name: ESP-OS NuttX Kernel + RootFS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/esp-os-kernel-rootfs.yml'
+      - 'ci/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: esp-os-kernel-rootfs-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build N16R8 KERNEL and external RootFS
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout ESP-OS sources
+        uses: actions/checkout@v4
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            autoconf automake bison build-essential curl flex gawk gettext git \
+            gperf libncurses-dev libtool libtool-bin libssl-dev make pkg-config python3 python3-pip \
+            genromfs vim-common xz-utils
+
+      - name: Install NuttX Kconfig frontends
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/nuttx-tools"
+          prefix="$RUNNER_TEMP/kconfig-frontends"
+          mkdir -p "$src" "$prefix"
+          curl -fsSL \
+            https://github.com/patacongo/tools/archive/9ad3e1ee75c7d39bfee8019ce44f4fd035d89584.tar.gz \
+            | tar -xz --strip-components=1 -C "$src"
+          cd "$src/kconfig-frontends"
+          ./configure --enable-mconf --disable-gconf --disable-qconf \
+            --enable-static --prefix="$prefix"
+          make -j"$(nproc)"
+          make install
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+
+      - name: Install pinned Xtensa toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          tool="$RUNNER_TEMP/xtensa-esp-elf"
+          mkdir -p "$tool"
+          curl -fsSL \
+            https://github.com/espressif/crosstool-NG/releases/download/esp-14.2.0_20241119/xtensa-esp-elf-14.2.0_20241119-x86_64-linux-gnu.tar.xz \
+            | tar -xJ --strip-components=1 -C "$tool"
+          # NuttX's Xtensa CROSSDEV is xtensa-esp32s3-elf- while the
+          # Espressif 14.2 toolchain distribution is named xtensa-esp-elf.
+          # Preserve vendor-provided aliases if present; otherwise create
+          # command-name symlinks to the same ESP32-S3-capable tool binaries.
+          for toolname in gcc g++ ar as ld nm objcopy objdump readelf size strip ranlib; do
+            if [[ ! -x "$tool/bin/xtensa-esp32s3-elf-$toolname" ]]; then
+              ln -s "xtensa-esp-elf-$toolname" "$tool/bin/xtensa-esp32s3-elf-$toolname"
+            fi
+          done
+          echo "$tool/bin" >> "$GITHUB_PATH"
+          "$tool/bin/xtensa-esp32s3-elf-gcc" --version
+
+      - name: Install pinned ESP image tooling
+        run: |
+          python3 -m pip install --user 'esptool==4.8.1'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build kernel, boot ROMFS and external rootfs
+        env:
+          NUTTX_COMMIT: 3e04c33049ef28ffdcae351f5b08d10053a5df9a
+          NUTTX_APPS_COMMIT: d14111ebeff7e8eb0512e63238883dece6842c05
+          XTENSA_TOOLCHAIN: xtensa-esp-elf-14.2.0_20241119
+        run: bash ci/scripts/build_kernel_rootfs.sh
+
+      - name: Validate ESP32-S3 native image header
+        run: esptool.py image_info out/nuttx.bin
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp-os-n16r8-kernel-rootfs-${{ github.sha }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 14
