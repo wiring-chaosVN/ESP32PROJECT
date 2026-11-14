@@ -55,6 +55,11 @@ def main() -> None:
         "CONFIG_ENABLE_ALL_SIGNALS=y",
         "CONFIG_ESP32S3_APP_FORMAT_LEGACY=y",
         "CONFIG_ESP32S3_USERFAULT_ABORT=y",
+        "CONFIG_ESP32S3_WCL=y",
+        "CONFIG_ESP32S3_UART0=y",
+        "CONFIG_UART0_SERIAL_CONSOLE=y",
+        "CONFIG_SYSTEM_NSH=y",
+        'CONFIG_SYSTEM_NSH_PROGNAME="init"',
         "CONFIG_XTENSA_TOOLCHAIN_ESP=y",
         "CONFIG_MM_PGSIZE=65536",
         "CONFIG_ARCH_PGPOOL_PBASE=0x10000",
@@ -82,6 +87,8 @@ def main() -> None:
     print("PASS: external rootfs is ROMFS and fits the 6 MiB rootfs MTD")
     print("PASS: N16R8 16 MiB QIO Flash + 8 MiB Octal PSRAM KERNEL configuration")
     print("PASS: 64 KiB page pool baseline and first 64 KiB PSRAM reservation")
+    print("PASS: UART0 serial console + NSH init application configured")
+    print("PASS: ESP32-S3 WCL + NuttX KERNEL-mode user boundary configured")
     print("PASS: embedded boot ROMFS is linked (non-stub symbol)")
     print("PASS: ROMF deferred; no flash operation requested")
     print("NOTE: this is a build-artifact check, not a bootloader/hardware validation")

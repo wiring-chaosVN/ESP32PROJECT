@@ -1,3 +1,3 @@
-ESP-OS shared library directory.
-
-No runtime shared-library ABI is declared by this scaffold yet.
+Reserved for ESP-OS user-space shared libraries.
+Only ABI-compatible libraries built against the pinned NuttX export may be
+placed here.

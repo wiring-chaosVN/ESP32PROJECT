@@ -3,7 +3,7 @@ diff --git a/boards/xtensa/esp32s3/common/scripts/legacy_sections.ld b/boards/xt
 +++ b/boards/xtensa/esp32s3/common/scripts/legacy_sections.ld
 @@ -185,7 +185,19 @@
      . = ALIGN(4) + 16;
-
+ 
      _iram_text = ABSOLUTE(.);
    } >iram0_0_seg
 +
@@ -18,6 +18,6 @@ diff --git a/boards/xtensa/esp32s3/common/scripts/legacy_sections.ld b/boards/xt
 +    KEEP (*(.world1_vectors.text));
 +  } >iram0_0_seg
 +#endif
-
+ 
    .dram0.dummy (NOLOAD) :
    {
