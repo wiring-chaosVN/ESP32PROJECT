@@ -1,0 +1,34 @@
+{
+  "project": "ESP-OS",
+  "build_kit_version": "0.2.0",
+  "target": "ESP32-S3-WROOM-1-N16R8",
+  "nuttx_commit": "3e04c33049ef28ffdcae351f5b08d10053a5df9a",
+  "nuttx_apps_commit": "d14111ebeff7e8eb0512e63238883dece6842c05",
+  "xtensa_toolchain": "xtensa-esp-elf-14.2.0_20241119",
+  "uart0": {
+    "baud": 115200,
+    "format": "8N1",
+    "tx_gpio": 43,
+    "rx_gpio": 44
+  },
+  "console": "NuttX NSH initial user application",
+  "security": {
+    "nuttx_kernel_mode": true,
+    "esp32s3_wcl": true,
+    "mmu_address_environments": true,
+    "userfault_abort": true,
+    "trustzone_tee": false,
+    "efuse_burn": false,
+    "secure_boot_enabled": false,
+    "flash_encryption_enabled": false,
+    "hardware_verified": false
+  },
+  "rootfs": {
+    "external_romfs": true,
+    "runtime_mtd_mount": false,
+    "rootfs_data_littlefs_mount": false,
+    "autoformat": false
+  },
+  "flash_programmed": false,
+  "bootloader_nbif_compatibility_verified": false
+}
